@@ -61,5 +61,21 @@ func main() {
 			log.Fatalf("Ошибка трансляции сложного выражения: %v", err)
 		}
 
-		fmt.Printf("Сложное Z3 выражение создано: %T\n", z3AndExpr)
+	fmt.Printf("Сложное Z3 выражение создано: %T\n", z3AndExpr)
+
+	fmt.Println("\n=== Тестирование унарных операций ===")
+
+	negX := symbolic.NewUnaryOperation(x, symbolic.UNARY_MINUS)
+	fmt.Printf("Унарный минус: %s\n", negX.String())
+
+	b := symbolic.NewSymbolicVariable("b", symbolic.BoolType)
+	notB := symbolic.NewUnaryOperation(b, symbolic.UNARY_NOT)
+	fmt.Printf("Логическое НЕ: %s\n", notB.String())
+
+	z3NegX, _ := translator.TranslateExpression(negX)
+	fmt.Printf("Z3 унарный минус создан: %T\n", z3NegX)
+
+	z3NotB, _ := translator.TranslateExpression(notB)
+	fmt.Printf("Z3 логическое НЕ создано: %T\n", z3NotB)
+
 }

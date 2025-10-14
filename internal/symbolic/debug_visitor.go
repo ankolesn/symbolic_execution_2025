@@ -33,9 +33,18 @@ func (dv *DebugVisitor) VisitBinaryOperation(expr *BinaryOperation) interface{} 
 func (dv *DebugVisitor) VisitLogicalOperation(expr *LogicalOperation) interface{} {
 	dv.printIndent("LogicalOperation: " + expr.Operator.String())
 	dv.Indent++
-	for _, op := range expr.Operands {
+	for i, op := range expr.Operands {
+		dv.printIndent(fmt.Sprintf("Operand[%d]:", i))
 		op.Accept(dv)
 	}
+	dv.Indent--
+	return nil
+}
+
+func (dv *DebugVisitor) VisitUnaryOperation(expr *UnaryOperation) interface{} {
+	dv.printIndent("UnaryOperation: " + expr.Operator.String())
+	dv.Indent++
+	expr.Operand.Accept(dv)
 	dv.Indent--
 	return nil
 }

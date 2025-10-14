@@ -76,6 +76,24 @@ func (op LogicalOperator) String() string {
 	}
 }
 
+type UnaryOperator int
+
+const (
+	UNARY_MINUS UnaryOperator = iota // -x
+	UNARY_NOT                        // !x или not x
+)
+
+func (op UnaryOperator) String() string {
+	switch op {
+	case UNARY_MINUS:
+		return "-"
+	case UNARY_NOT:
+		return "!"
+	default:
+		return "unknown"
+	}
+}
+
 // SymbolicExpression - базовый интерфейс для всех символьных выражений
 type SymbolicExpression interface {
 	// Type возвращает тип выражения
@@ -285,80 +303,44 @@ func (lo *LogicalOperation) Accept(visitor Visitor) interface{} {
 	return visitor.VisitLogicalOperation(lo)
 }
 
-// Операторы для бинарных выражений
-type BinaryOperator int
+// UnaryOperation представляет унарную операцию
+type UnaryOperation struct {
+	Operand  SymbolicExpression
+	Operator UnaryOperator
+}
 
-const (
-	// Арифметические операторы
-	ADD BinaryOperator = iota
-	SUB
-	MUL
-	DIV
-	MOD
-
-	// Операторы сравнения
-	EQ // равно
-	NE // не равно
-	LT // меньше
-	LE // меньше или равно
-	GT // больше
-	GE // больше или равно
-)
-
-// String возвращает строковое представление оператора
-func (op BinaryOperator) String() string {
+// NewUnaryOperation создаёт новую унарную операцию
+func NewUnaryOperation(operand SymbolicExpression, op UnaryOperator) *UnaryOperation {
 	switch op {
-	case ADD:
-		return "+"
-	case SUB:
-		return "-"
-	case MUL:
-		return "*"
-	case DIV:
-		return "/"
-	case MOD:
-		return "%"
-	case EQ:
-		return "=="
-	case NE:
-		return "!="
-	case LT:
-		return "<"
-	case LE:
-		return "<="
-	case GT:
-		return ">"
-	case GE:
-		return ">="
-	default:
-		return "unknown"
+	case UNARY_MINUS:
+		if operand.Type() != IntType {
+			panic("Унарный минус требует целочисленный операнд")
+		}
+	case UNARY_NOT:
+		if operand.Type() != BoolType {
+			panic("Логическое НЕ требует булев операнд")
+		}
+	}
+
+	return &UnaryOperation{
+		Operand:  operand,
+		Operator: op,
 	}
 }
 
-// Логические операторы
-type LogicalOperator int
+// Type возвращает тип операции
+func (uo *UnaryOperation) Type() ExpressionType {
+	return uo.Operand.Type()
+}
 
-const (
-	AND LogicalOperator = iota
-	OR
-	NOT
-	IMPLIES
-)
+// String возвращает строковое представление операции
+func (uo *UnaryOperation) String() string {
+	return fmt.Sprintf("%s%s", uo.Operator.String(), uo.Operand.String())
+}
 
-// String возвращает строковое представление логического оператора
-func (op LogicalOperator) String() string {
-	switch op {
-	case AND:
-		return "&&"
-	case OR:
-		return "||"
-	case NOT:
-		return "!"
-	case IMPLIES:
-		return "=>"
-	default:
-		return "unknown"
-	}
+// Accept реализует Visitor pattern
+func (uo *UnaryOperation) Accept(visitor Visitor) interface{} {
+	return visitor.VisitUnaryOperation(uo)
 }
 
 type Ref struct {
@@ -376,9 +358,3 @@ func (ref *Ref) String() string {
 func (ref *Ref) Accept(visitor Visitor) interface{} {
 	panic("не реализовано")
 }
-
-// TODO: Добавьте дополнительные типы выражений по необходимости:
-// - UnaryOperation (унарные операции: -x, !x)
-// - ArrayAccess (доступ к элементам массива: arr[index])
-// - FunctionCall (вызовы функций: f(x, y))
-// - ConditionalExpression (тернарный оператор: condition ? true_expr : false_expr)

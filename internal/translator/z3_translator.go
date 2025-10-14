@@ -59,7 +59,16 @@ func (zt *Z3Translator) VisitVariable(expr *symbolic.SymbolicVariable) interface
 	}
 	
 	// Создать новую Z3 переменную соответствующего типа
-	z3Var := zt.createZ3Variable(expr.Name, expr.Type())
+	var z3Var z3.Value
+	switch expr.Type() {
+	case symbolic.IntType:
+		z3Var = zt.ctx.IntConst(expr.Name)
+	case symbolic.BoolType:
+		z3Var = zt.ctx.BoolConst(expr.Name)
+	default:
+		fmt.Printf("Warning: неподдерживаемый тип переменной: %v\n", expr.Type())
+		return nil
+	}
 	
 	// Добавить в кэш и вернуть
 	zt.vars[expr.Name] = z3Var
@@ -80,11 +89,15 @@ func (zt *Z3Translator) VisitBoolConstant(expr *symbolic.BoolConstant) interface
 
 // VisitBinaryOperation транслирует бинарную операцию в Z3
 func (zt *Z3Translator) VisitBinaryOperation(expr *symbolic.BinaryOperation) interface{} {
-	// 1. Транслировать левый и правый операнды
-	left := expr.Left.Accept(zt).(z3.Value)
-	right := expr.Right.Accept(zt).(z3.Value)
+	// Транслировать левый и правый операнды
+	left := expr.Left.Accept(zt)
+	right := expr.Right.Accept(zt)
+	
+	if left == nil || right == nil {
+		return nil
+	}
 
-	// 2. В зависимости от оператора создать соответствующую Z3 операцию
+	// В зависимости от оператора создать соответствующую Z3 операцию
 	switch expr.Operator {
 	case symbolic.ADD:
 		return left.(z3.Int).Add(right.(z3.Int))
@@ -119,7 +132,8 @@ func (zt *Z3Translator) VisitBinaryOperation(expr *symbolic.BinaryOperation) int
 	case symbolic.GE:
 		return left.(z3.Int).GE(right.(z3.Int))
 	default:
-		panic(fmt.Sprintf("неизвестный бинарный оператор: %v", expr.Operator))
+		fmt.Printf("Warning: неизвестный бинарный оператор: %v\n", expr.Operator)
+		return nil
 	}
 }
 
@@ -132,23 +146,14 @@ func (zt *Z3Translator) VisitLogicalOperation(expr *symbolic.LogicalOperation) i
 		operands[i] = result.(z3.Bool)
 	}
 
-	// 2. Применить соответствующую логическую операцию
 	switch expr.Operator {
 	case symbolic.AND:
-		if len(operands) == 1 {
-			return operands[0]
-		}
-		// Для AND строим цепочку: op1.And(op2).And(op3)...
 		result := operands[0]
 		for i := 1; i < len(operands); i++ {
 			result = result.And(operands[i])
 		}
 		return result
 	case symbolic.OR:
-		if len(operands) == 1 {
-			return operands[0]
-		}
-		// Для OR строим цепочку: op1.Or(op2).Or(op3)...
 		result := operands[0]
 		for i := 1; i < len(operands); i++ {
 			result = result.Or(operands[i])
@@ -156,29 +161,35 @@ func (zt *Z3Translator) VisitLogicalOperation(expr *symbolic.LogicalOperation) i
 		return result
 	case symbolic.NOT:
 		if len(operands) != 1 {
-			panic("NOT требует ровно один операнд")
+			fmt.Printf("Error: NOT требует ровно один операнд\n")
+			return nil
 		}
 		return operands[0].Not()
 	case symbolic.IMPLIES:
 		if len(operands) != 2 {
-			panic("IMPLIES требует два операнда")
+			fmt.Printf("Error: IMPLIES требует два операнд\n")
+			return nil
 		}
 		return operands[0].Implies(operands[1])
 	default:
-		panic(fmt.Sprintf("неизвестный логический оператор: %v", expr.Operator))
+		fmt.Printf("Warning: неизвестный логический оператор: %v\n", expr.Operator)
+		return nil
 	}
 }
 
-// Вспомогательные методы
+func (zt *Z3Translator) VisitUnaryOperation(expr *symbolic.UnaryOperation) interface{} {
+	operand := expr.Operand.Accept(zt)
+	if operand == nil {
+		return nil
+	}
 
-// createZ3Variable создаёт Z3 переменную соответствующего типа
-func (zt *Z3Translator) createZ3Variable(name string, exprType symbolic.ExpressionType) z3.Value {
-	switch exprType {
-	case symbolic.IntType:
-		return zt.ctx.IntConst(name)
-	case symbolic.BoolType:
-		return zt.ctx.BoolConst(name)
+	switch expr.Operator {
+	case symbolic.UNARY_MINUS:
+		return operand.(z3.Int).Neg()
+	case symbolic.UNARY_NOT:
+		return operand.(z3.Bool).Not()
 	default:
-		panic(fmt.Sprintf("неподдерживаемый тип переменной: %v", exprType))
+		fmt.Printf("Warning: неизвестный унарный оператор: %v\n", expr.Operator)
+		return nil
 	}
 }

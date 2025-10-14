@@ -3,13 +3,15 @@ package main
 
 import (
 	"fmt"
+	"log"
+
+	"symbolic-execution-course/internal/symbolic"
+	"symbolic-execution-course/internal/translator"
 )
 
 func main() {
 	fmt.Println("=== Symbolic Expressions Demo ===")
 
-	// TODO: Раскомментируйте после реализации методов
-	/*
 		// Создаём простые символьные выражения
 		x := symbolic.NewSymbolicVariable("x", symbolic.IntType)
 		y := symbolic.NewSymbolicVariable("y", symbolic.IntType)
@@ -21,6 +23,11 @@ func main() {
 
 		fmt.Printf("Выражение: %s\n", condition.String())
 		fmt.Printf("Тип выражения: %s\n", condition.Type().String())
+
+		// Демонстрация структуры выражения с помощью DebugVisitor
+		debugVisitor := &symbolic.DebugVisitor{}
+		fmt.Println("Структура выражения:")
+		condition.Accept(debugVisitor)
 
 		// Создаём Z3 транслятор
 		translator := translator.NewZ3Translator()
@@ -45,6 +52,9 @@ func main() {
 
 		fmt.Printf("Сложное выражение: %s\n", andExpr.String())
 
+		fmt.Println("Структура сложного выражения:")
+		andExpr.Accept(debugVisitor)
+
 		// Транслируем сложное выражение
 		z3AndExpr, err := translator.TranslateExpression(andExpr)
 		if err != nil {
@@ -52,7 +62,4 @@ func main() {
 		}
 
 		fmt.Printf("Сложное Z3 выражение создано: %T\n", z3AndExpr)
-	*/
-
-	fmt.Println("Реализуйте методы в symbolic и translator пакетах для запуска демо!")
 }

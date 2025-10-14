@@ -3,6 +3,79 @@ package symbolic
 
 import "fmt"
 
+// Операторы для бинарных выражений
+type BinaryOperator int
+
+const (
+	// Арифметические операторы
+	ADD BinaryOperator = iota
+	SUB
+	MUL
+	DIV
+	MOD
+
+	// Операторы сравнения
+	EQ // равно
+	NE // не равно
+	LT // меньше
+	LE // меньше или равно
+	GT // больше
+	GE // больше или равно
+)
+
+func (op BinaryOperator) String() string {
+	switch op {
+	case ADD:
+		return "+"
+	case SUB:
+		return "-"
+	case MUL:
+		return "*"
+	case DIV:
+		return "/"
+	case MOD:
+		return "%"
+	case EQ:
+		return "=="
+	case NE:
+		return "!="
+	case LT:
+		return "<"
+	case LE:
+		return "<="
+	case GT:
+		return ">"
+	case GE:
+		return ">="
+	default:
+		return "unknown"
+	}
+}
+
+type LogicalOperator int
+
+const (
+	AND LogicalOperator = iota
+	OR
+	NOT
+	IMPLIES
+)
+
+func (op LogicalOperator) String() string {
+	switch op {
+	case AND:
+		return "&&"
+	case OR:
+		return "||"
+	case NOT:
+		return "!"
+	case IMPLIES:
+		return "=>"
+	default:
+		return "unknown"
+	}
+}
+
 // SymbolicExpression - базовый интерфейс для всех символьных выражений
 type SymbolicExpression interface {
 	// Type возвращает тип выражения
@@ -101,28 +174,45 @@ type BinaryOperation struct {
 	Operator BinaryOperator
 }
 
-// TODO: Реализуйте следующие методы в рамках домашнего задания
-
 // NewBinaryOperation создаёт новую бинарную операцию
 func NewBinaryOperation(left, right SymbolicExpression, op BinaryOperator) *BinaryOperation {
-	// TODO: Реализовать
-	// Создать новую бинарную операцию и проверить совместимость типов
-	panic("не реализовано")
+	switch op {
+	case ADD, SUB, MUL, DIV, MOD:
+		if left.Type() != IntType || right.Type() != IntType {
+			panic("Арифметические операции требуют целочисленные операнды")
+		}
+	case EQ, NE:
+		if left.Type() != right.Type() {
+			panic("Операторы сравнения требуют операнды одного типа")
+		}
+	case LT, LE, GT, GE:
+		if left.Type() != IntType || right.Type() != IntType {
+			panic("Операторы сравнения требуют целочисленные операнды")
+		}
+	}
+
+	return &BinaryOperation{
+		Left:     left,
+		Right:    right,
+		Operator: op,
+	}
 }
 
 // Type возвращает результирующий тип операции
 func (bo *BinaryOperation) Type() ExpressionType {
-	// TODO: Реализовать
-	// Определить результирующий тип на основе операции и типов операндов
-	// Например: int + int = int, int < int = bool
-	panic("не реализовано")
+	switch bo.Operator {
+	case ADD, SUB, MUL, DIV, MOD:
+		return IntType
+	case EQ, NE, LT, LE, GT, GE:
+		return BoolType
+	default:
+		panic("Неизвестный оператор")
+	}
 }
 
 // String возвращает строковое представление операции
 func (bo *BinaryOperation) String() string {
-	// TODO: Реализовать
-	// Формат: "(left operator right)"
-	panic("не реализовано")
+	return fmt.Sprintf("(%s %s %s)", bo.Left.String(), bo.Operator.String(), bo.Right.String())
 }
 
 // Accept реализует Visitor pattern
@@ -136,13 +226,27 @@ type LogicalOperation struct {
 	Operator LogicalOperator
 }
 
-// TODO: Реализуйте следующие методы в рамках домашнего задания
-
 // NewLogicalOperation создаёт новую логическую операцию
 func NewLogicalOperation(operands []SymbolicExpression, op LogicalOperator) *LogicalOperation {
-	// TODO: Реализовать
-	// Создать логическую операцию и проверить типы операндов
-	panic("не реализовано")
+	// Проверка количества операндов
+	if op == NOT && len(operands) != 1 {
+		panic("Оператор NOT требует один операнд")
+	}
+	if (op == AND || op == OR || op == IMPLIES) && len(operands) < 2 {
+		panic("Логические операторы AND, OR, IMPLIES требуют как минимум два операнда")
+	}
+
+	// Проверка типов операндов
+	for _, operand := range operands {
+		if operand.Type() != BoolType {
+			panic("Логические операции требуют булевы операнды")
+		}
+	}
+
+	return &LogicalOperation{
+		Operands: operands,
+		Operator: op,
+	}
 }
 
 // Type возвращает тип логической операции (всегда bool)
@@ -152,11 +256,28 @@ func (lo *LogicalOperation) Type() ExpressionType {
 
 // String возвращает строковое представление логической операции
 func (lo *LogicalOperation) String() string {
-	// TODO: Реализовать
-	// Для NOT: "!operand"
-	// Для AND/OR: "(operand1 && operand2 && ...)"
-	// Для IMPLIES: "(operand1 => operand2)"
-	panic("не реализовано")
+	switch lo.Operator {
+	case NOT:
+		return fmt.Sprintf("!%s", lo.Operands[0].String())
+	case AND, OR:
+		operatorStr := lo.Operator.String()
+		result := "("
+		for i, operand := range lo.Operands {
+			if i > 0 {
+				result += " " + operatorStr + " "
+			}
+			result += operand.String()
+		}
+		result += ")"
+		return result
+	case IMPLIES:
+		if len(lo.Operands) != 2 {
+			panic("IMPLIES требует два операнда")
+		}
+		return fmt.Sprintf("(%s => %s)", lo.Operands[0].String(), lo.Operands[1].String())
+	default:
+		panic("Неизвестный логический оператор")
+	}
 }
 
 // Accept реализует Visitor pattern

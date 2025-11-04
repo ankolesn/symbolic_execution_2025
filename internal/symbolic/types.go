@@ -8,7 +8,8 @@ const (
 	IntType ExpressionType = iota
 	BoolType
 	ArrayType
-	// Добавьте другие типы по необходимости
+	RefType
+	StructType
 )
 
 // String возвращает строковое представление типа
@@ -20,6 +21,10 @@ func (et ExpressionType) String() string {
 		return "bool"
 	case ArrayType:
 		return "array"
+	case RefType:
+		return "ref"
+	case StructType:
+		return "struct"
 	default:
 		return "unknown"
 	}

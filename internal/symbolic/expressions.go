@@ -344,17 +344,25 @@ func (uo *UnaryOperation) Accept(visitor Visitor) interface{} {
 }
 
 type Ref struct {
-	// TODO: Выбрать и написать внутреннее представление символьной ссылки
+	ID       int
+	ExprType ExpressionType
 }
 
-func (ref *Ref) Type() ExpressionType {
-	panic("не реализовано")
+func NewRef(id int, exprType ExpressionType) *Ref {
+	return &Ref{
+		ID:       id,
+		ExprType: exprType,
+	}
 }
 
-func (ref *Ref) String() string {
-	panic("не реализовано")
+func (r *Ref) Type() ExpressionType {
+	return RefType
 }
 
-func (ref *Ref) Accept(visitor Visitor) interface{} {
-	panic("не реализовано")
+func (r *Ref) String() string {
+	return fmt.Sprintf("ref_%d", r.ID)
+}
+
+func (r *Ref) Accept(visitor Visitor) interface{} {
+	return visitor.VisitRef(r)
 }

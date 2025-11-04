@@ -23,8 +23,10 @@ type ExpressionTranslator interface {
 	VisitVariable(expr *symbolic.SymbolicVariable) (interface{}, error)
 	VisitIntConstant(expr *symbolic.IntConstant) (interface{}, error)
 	VisitBoolConstant(expr *symbolic.BoolConstant) (interface{}, error)
+	VisitRef(expr *symbolic.Ref) (interface{}, error)
 	VisitBinaryOperation(expr *symbolic.BinaryOperation) (interface{}, error)
 	VisitLogicalOperation(expr *symbolic.LogicalOperation) (interface{}, error)
+	VisitUnaryOperation(expr *symbolic.UnaryOperation) (interface{}, error)
 }
 
 // TranslationError представляет ошибку трансляции

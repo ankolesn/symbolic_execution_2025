@@ -8,4 +8,5 @@ type Visitor interface {
 	VisitBinaryOperation(expr *BinaryOperation) interface{}
 	VisitLogicalOperation(expr *LogicalOperation) interface{}
 	VisitUnaryOperation(expr *UnaryOperation) interface{}
+	VisitRef(expr *Ref) interface{}
 }

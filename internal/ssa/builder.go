@@ -2,7 +2,10 @@
 package ssa
 
 import (
+	"go/ast"
+	"go/parser"
 	"go/token"
+	"go/types"
 
 	"golang.org/x/tools/go/ssa"
 )
@@ -19,22 +22,57 @@ func NewBuilder() *Builder {
 	}
 }
 
-// TODO: Реализуйте следующие методы в рамках домашнего задания
-
 // ParseAndBuildSSA парсит исходный код Go и создаёт SSA представление
-// Возвращает SSA программу и функцию по имени
 func (b *Builder) ParseAndBuildSSA(source string, funcName string) (*ssa.Function, error) {
-	// TODO: Реализовать
-	// Шаги:
-	// 1. Парсинг исходного кода с помощью go/parser
-	// 2. Создание SSA программы
-	// 3. Поиск нужной функции по имени
+	f, err := parser.ParseFile(b.fset, "homework1/main.go", source, parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
 
-	// Подсказки:
-	// - Используйте parser.ParseFile для парсинга
-	// - Создайте packages.Config и загрузите пакет
-	// - Используйте ssautil.CreateProgram для создания SSA
-	// - Найдите функцию в SSA программе
+	files := []*ast.File{f}
 
-	panic("не реализовано")
+	config := &types.Config{
+		Importer: nil,
+	}
+
+	info := &types.Info{
+		Types:      make(map[ast.Expr]types.TypeAndValue),
+		Defs:       make(map[*ast.Ident]types.Object),
+		Uses:       make(map[*ast.Ident]types.Object),
+		Implicits:  make(map[ast.Node]types.Object),
+		Scopes:     make(map[ast.Node]*types.Scope),
+		Selections: make(map[*ast.SelectorExpr]*types.Selection),
+	}
+
+	pkg, err := config.Check("homework1/main.go", b.fset, files, info)
+	if err != nil {
+		return nil, err
+	}
+
+	prog := ssa.NewProgram(b.fset, ssa.SanityCheckFunctions)
+	
+	ssaPkg := prog.CreatePackage(pkg, files, info, false)
+	ssaPkg.Build()
+
+	return ssaPkg.Func(funcName), nil
+}
+
+func (b *Builder) PrintFunctionInfo(fn *ssa.Function) {
+	if fn == nil {
+		println("Функция не найдена")
+		return
+	}
+
+	println("Количество блоков:", len(fn.Blocks))
+	
+	for i, param := range fn.Params {
+		println("  Параметр", i, ":", param.Name(), param.Type().String())
+	}
+
+	for i, block := range fn.Blocks {
+		println("\nБлoк", i, ":")
+		for j, instr := range block.Instrs {
+			println("    ", j, ":", instr.String())
+		}
+	}
 }

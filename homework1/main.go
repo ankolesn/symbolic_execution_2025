@@ -29,8 +29,9 @@ func testFunction(x int) int {
 
 	// Строим SSA из исходного кода
 	graph, err := builder.ParseAndBuildSSA(source, "testFunction")
+	builder.PrintFunctionInfo(graph)
 	if err != nil {
 		log.Fatalf("Ошибка построения SSA: %v", err)
 	}
-	fmt.Printf("CFG построен для функции с %d блоками\n", len(graph.Blocks))
+	fmt.Printf("CFG построен для функции c %d блоками\n", len(graph.Blocks))
 }

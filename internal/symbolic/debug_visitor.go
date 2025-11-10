@@ -21,6 +21,11 @@ func (dv *DebugVisitor) VisitBoolConstant(expr *BoolConstant) interface{} {
 	return nil
 }
 
+func (dv *DebugVisitor) VisitRef(expr *Ref) interface{} {
+	dv.printIndent("Ref: " + expr.String() + " (" + expr.Type().String() + ")")
+	return nil
+}
+
 func (dv *DebugVisitor) VisitBinaryOperation(expr *BinaryOperation) interface{} {
 	dv.printIndent("BinaryOperation: " + expr.Operator.String())
 	dv.Indent++

@@ -4,8 +4,9 @@ package translator
 import (
 	"fmt"
 
-	"github.com/ebukreev/go-z3/z3"
 	"symbolic-execution-course/internal/symbolic"
+
+	"github.com/ebukreev/go-z3/z3"
 )
 
 // Z3Translator транслирует символьные выражения в Z3 формулы
@@ -57,7 +58,7 @@ func (zt *Z3Translator) VisitVariable(expr *symbolic.SymbolicVariable) interface
 	if v, exists := zt.vars[expr.Name]; exists {
 		return v
 	}
-	
+
 	// Создать новую Z3 переменную соответствующего типа
 	var z3Var z3.Value
 	switch expr.Type() {
@@ -69,7 +70,7 @@ func (zt *Z3Translator) VisitVariable(expr *symbolic.SymbolicVariable) interface
 		fmt.Printf("Warning: неподдерживаемый тип переменной: %v\n", expr.Type())
 		return nil
 	}
-	
+
 	// Добавить в кэш и вернуть
 	zt.vars[expr.Name] = z3Var
 	return z3Var
@@ -87,12 +88,18 @@ func (zt *Z3Translator) VisitBoolConstant(expr *symbolic.BoolConstant) interface
 	return zt.ctx.FromBool(expr.Value)
 }
 
+// VisitRef транслирует символьную ссылку в Z3
+func (zt *Z3Translator) VisitRef(expr *symbolic.Ref) interface{} {
+	// Представляем ссылку как целочисленную константу с ID ссылки
+	return zt.ctx.FromInt(int64(expr.ID), zt.ctx.IntSort())
+}
+
 // VisitBinaryOperation транслирует бинарную операцию в Z3
 func (zt *Z3Translator) VisitBinaryOperation(expr *symbolic.BinaryOperation) interface{} {
 	// Транслировать левый и правый операнды
 	left := expr.Left.Accept(zt)
 	right := expr.Right.Accept(zt)
-	
+
 	if left == nil || right == nil {
 		return nil
 	}

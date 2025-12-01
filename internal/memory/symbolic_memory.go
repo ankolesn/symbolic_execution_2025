@@ -199,3 +199,7 @@ func (sm *SymbolicMemory) AllocateArray(length int) *symbolic.Ref {
 	sm.objects[id] = obj
 	return symbolic.NewRef(id, symbolic.ArrayType)
 }
+
+func (sm *SymbolicMemory) GetNextObjectID() int {
+	return sm.nextObjectID
+}

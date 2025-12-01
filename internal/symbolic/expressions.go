@@ -255,8 +255,13 @@ func NewLogicalOperation(operands []SymbolicExpression, op LogicalOperator) *Log
 	}
 
 	// Проверка типов операндов
-	for _, operand := range operands {
+	for i, operand := range operands {
+		if operand == nil {
+			panic(fmt.Sprintf("Операнд %d равен nil", i))
+		}
 		if operand.Type() != BoolType {
+			fmt.Printf("Отладка NewLogicalOperation: операнд %d имеет тип %v, значение: %s\n",
+				i, operand.Type(), operand.String())
 			panic("Логические операции требуют булевы операнды")
 		}
 	}

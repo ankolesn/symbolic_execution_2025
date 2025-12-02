@@ -9,4 +9,6 @@ type Visitor interface {
 	VisitLogicalOperation(expr *LogicalOperation) interface{}
 	VisitUnaryOperation(expr *UnaryOperation) interface{}
 	VisitRef(expr *Ref) interface{}
+	VisitFieldAddr(expr *FieldAddr) interface{}
+	VisitIndexAddr(expr *IndexAddr) interface{}
 }

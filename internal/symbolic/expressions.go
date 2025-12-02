@@ -255,8 +255,13 @@ func NewLogicalOperation(operands []SymbolicExpression, op LogicalOperator) *Log
 	}
 
 	// Проверка типов операндов
-	for _, operand := range operands {
+	for i, operand := range operands {
+		if operand == nil {
+			panic(fmt.Sprintf("Операнд %d равен nil", i))
+		}
 		if operand.Type() != BoolType {
+			fmt.Printf("Отладка NewLogicalOperation: операнд %d имеет тип %v, значение: %s\n",
+				i, operand.Type(), operand.String())
 			panic("Логические операции требуют булевы операнды")
 		}
 	}
@@ -365,4 +370,52 @@ func (r *Ref) String() string {
 
 func (r *Ref) Accept(visitor Visitor) interface{} {
 	return visitor.VisitRef(r)
+}
+
+type FieldAddr struct {
+	Ref        *Ref
+	FieldIndex int
+}
+
+func NewFieldAddr(ref *Ref, fieldIndex int) *FieldAddr {
+	return &FieldAddr{
+		Ref:        ref,
+		FieldIndex: fieldIndex,
+	}
+}
+
+func (fa *FieldAddr) Type() ExpressionType {
+	return RefType
+}
+
+func (fa *FieldAddr) String() string {
+	return fmt.Sprintf("&%s.field[%d]", fa.Ref.String(), fa.FieldIndex)
+}
+
+func (fa *FieldAddr) Accept(visitor Visitor) interface{} {
+	return visitor.VisitFieldAddr(fa)
+}
+
+type IndexAddr struct {
+	Ref   *Ref
+	Index int
+}
+
+func NewIndexAddr(ref *Ref, index int) *IndexAddr {
+	return &IndexAddr{
+		Ref:   ref,
+		Index: index,
+	}
+}
+
+func (ia *IndexAddr) Type() ExpressionType {
+	return RefType
+}
+
+func (ia *IndexAddr) String() string {
+	return fmt.Sprintf("&%s[%d]", ia.Ref.String(), ia.Index)
+}
+
+func (ia *IndexAddr) Accept(visitor Visitor) interface{} {
+	return visitor.VisitIndexAddr(ia)
 }

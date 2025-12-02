@@ -94,6 +94,24 @@ func (zt *Z3Translator) VisitRef(expr *symbolic.Ref) interface{} {
 	return zt.ctx.FromInt(int64(expr.ID), zt.ctx.IntSort())
 }
 
+func (zt *Z3Translator) VisitFieldAddr(expr *symbolic.FieldAddr) interface{} {
+	base := expr.Ref.Accept(zt)
+	if base == nil {
+		return nil
+	}
+
+	return zt.ctx.FromInt(int64(expr.Ref.ID*1000+expr.FieldIndex), zt.ctx.IntSort())
+}
+
+func (zt *Z3Translator) VisitIndexAddr(expr *symbolic.IndexAddr) interface{} {
+	base := expr.Ref.Accept(zt)
+	if base == nil {
+		return nil
+	}
+
+	return zt.ctx.FromInt(int64(expr.Ref.ID*1000+expr.Index), zt.ctx.IntSort())
+}
+
 // VisitBinaryOperation транслирует бинарную операцию в Z3
 func (zt *Z3Translator) VisitBinaryOperation(expr *symbolic.BinaryOperation) interface{} {
 	// Транслировать левый и правый операнды

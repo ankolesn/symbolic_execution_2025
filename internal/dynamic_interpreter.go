@@ -3,44 +3,32 @@ package internal
 import (
 	"fmt"
 	"go/constant"
-	"go/token"
+	"strconv"
+	"strings"
 
-	"symbolic-execution-course/internal/memory"
 	"symbolic-execution-course/internal/symbolic"
 
 	"golang.org/x/tools/go/ssa"
 )
 
-type Interpreter struct {
-	CallStack     []CallStackFrame
-	Analyser      *Analyser
-	PathCondition symbolic.SymbolicExpression
-	Heap          memory.Memory
-	currentBlock  *ssa.BasicBlock
-	instrIndex    int
-}
+const maxTotalUnrolls = 100
+const maxLoopUnroll = 10 // Константа для максимального развертывания одного цикла
 
-type CallStackFrame struct {
-	Function    *ssa.Function
-	LocalMemory map[string]symbolic.SymbolicExpression
-	ReturnValue symbolic.SymbolicExpression
-}
-
-func (interpreter *Interpreter) getCurrentFrame() *CallStackFrame {
+func (interpreter *Interpreter) GetCurrentFrame() *CallStackFrame {
 	if len(interpreter.CallStack) == 0 {
 		return nil
 	}
 	return &interpreter.CallStack[len(interpreter.CallStack)-1]
 }
 
-func (interpreter *Interpreter) isFinished() bool {
+func (interpreter *Interpreter) IsFinished() bool {
 	return interpreter.currentBlock == nil ||
 		len(interpreter.CallStack) == 0 ||
 		(interpreter.currentBlock != nil && interpreter.instrIndex >= len(interpreter.currentBlock.Instrs))
 }
 
-func (interpreter *Interpreter) getNextInstruction() ssa.Instruction {
-	if interpreter.isFinished() {
+func (interpreter *Interpreter) GetNextInstruction() ssa.Instruction {
+	if interpreter.IsFinished() {
 		return nil
 	}
 
@@ -50,14 +38,46 @@ func (interpreter *Interpreter) getNextInstruction() ssa.Instruction {
 	return nil
 }
 
-func (interpreter *Interpreter) copy() Interpreter {
-	newInterpreter := Interpreter{
-		CallStack:     make([]CallStackFrame, len(interpreter.CallStack)),
-		Analyser:      interpreter.Analyser,
-		PathCondition: interpreter.PathCondition,
-		Heap:          interpreter.Heap,
-		currentBlock:  interpreter.currentBlock,
-		instrIndex:    interpreter.instrIndex,
+func (interpreter *Interpreter) initLoopSupport() {
+	if interpreter.loopCounters == nil {
+		interpreter.loopCounters = make(map[string]int)
+	}
+	if interpreter.visitedBlocks == nil {
+		interpreter.visitedBlocks = make(map[string]bool)
+	}
+	if interpreter.maxLoopUnroll == 0 {
+		interpreter.maxLoopUnroll = maxLoopUnroll
+	}
+	if interpreter.blockVisitCount == nil {
+		interpreter.blockVisitCount = make(map[string]int)
+	}
+}
+
+func (interpreter *Interpreter) Copy() *Interpreter {
+	newInterpreter := &Interpreter{
+		CallStack:       make([]CallStackFrame, len(interpreter.CallStack)),
+		Analyser:        interpreter.Analyser,
+		PathCondition:   interpreter.PathCondition,
+		Heap:            interpreter.Heap,
+		currentBlock:    interpreter.currentBlock,
+		instrIndex:      interpreter.instrIndex,
+		loopCounters:    make(map[string]int),
+		maxLoopUnroll:   interpreter.maxLoopUnroll,
+		visitedBlocks:   make(map[string]bool),
+		blockVisitCount: make(map[string]int),
+		prevBlock:       interpreter.prevBlock,
+	}
+
+	for k, v := range interpreter.loopCounters {
+		newInterpreter.loopCounters[k] = v
+	}
+
+	for k, v := range interpreter.visitedBlocks {
+		newInterpreter.visitedBlocks[k] = v
+	}
+
+	for k, v := range interpreter.blockVisitCount {
+		newInterpreter.blockVisitCount[k] = v
 	}
 
 	for i, frame := range interpreter.CallStack {
@@ -77,7 +97,9 @@ func (interpreter *Interpreter) copy() Interpreter {
 	return newInterpreter
 }
 
-func (interpreter *Interpreter) interpretDynamically(element ssa.Instruction) []Interpreter {
+func (interpreter *Interpreter) InterpretDynamically(element ssa.Instruction) []*Interpreter {
+	interpreter.initLoopSupport()
+
 	switch instr := element.(type) {
 	case *ssa.Return:
 		return interpreter.interpretReturn(instr)
@@ -90,143 +112,132 @@ func (interpreter *Interpreter) interpretDynamically(element ssa.Instruction) []
 	case *ssa.BinOp:
 		return interpreter.interpretBinOp(instr)
 	case *ssa.Store:
-		interpreter.instrIndex++
-		return []Interpreter{*interpreter}
+		return interpreter.interpretStore(instr)
 	case *ssa.Alloc:
 		return interpreter.interpretAlloc(instr)
-	default:
+	case *ssa.Phi:
+		return interpreter.interpretPhi(instr)
+	case *ssa.ChangeType:
 		interpreter.instrIndex++
-		return []Interpreter{*interpreter}
+		return []*Interpreter{interpreter}
+	case *ssa.Convert:
+		return interpreter.interpretConvert(instr)
+	case *ssa.Call:
+		return interpreter.interpretCall(instr)
+	case *ssa.MakeInterface:
+		return interpreter.interpretMakeInterface(instr)
+	case *ssa.FieldAddr:
+		return interpreter.interpretFieldAddr(instr)
+	case *ssa.Field:
+		return interpreter.interpretField(instr)
+	case *ssa.IndexAddr:
+		return interpreter.interpretIndexAddr(instr)
+	case *ssa.Index:
+		return interpreter.interpretIndex(instr)
+	default:
+		if unop, ok := element.(*ssa.UnOp); ok && unop.Op.String() == "Load" {
+			return interpreter.interpretLoad(unop)
+		}
+		interpreter.instrIndex++
+		return []*Interpreter{interpreter}
 	}
 }
 
-// Метод resolveExpression
-func (interpreter *Interpreter) resolveExpression(value ssa.Value) symbolic.SymbolicExpression {
-	fmt.Printf("=== ОТЛАДКА resolveExpression ===\n")
-	fmt.Printf("  Входное значение: %T, имя: '%s', строка: %s\n",
-		value, value.Name(), value.String())
+func (interpreter *Interpreter) ResolveExpression(value ssa.Value) symbolic.SymbolicExpression {
+	if value == nil {
+		return symbolic.NewIntConstant(0)
+	}
 
 	if value.Name() != "" {
-		frame := interpreter.getCurrentFrame()
+		frame := interpreter.GetCurrentFrame()
 		if frame != nil {
 			if expr, ok := frame.LocalMemory[value.Name()]; ok {
-				fmt.Printf("  Найдено в локальной памяти: %s (тип: %v)\n",
-					expr.String(), expr.Type())
 				return expr
-			} else {
-				fmt.Printf("  Не найдено в локальной памяти под именем '%s'\n", value.Name())
 			}
 		}
 	}
 
-	// Если нет в локальной памяти, разрешаем по типу
 	switch v := value.(type) {
 	case *ssa.Const:
-		fmt.Printf("  Это Const\n")
 		return interpreter.resolveConst(v)
 	case *ssa.UnOp:
-		fmt.Printf("  Это UnOp\n")
+		if v.Op.String() == "Load" {
+			return interpreter.resolveLoad(v)
+		}
 		return interpreter.resolveUnOp(v)
 	case *ssa.BinOp:
-		fmt.Printf("  Это BinOp: операция %v\n", v.Op)
-		result := interpreter.resolveBinOp(v)
-		fmt.Printf("  Результат BinOp: %s (тип: %v)\n", result.String(), result.Type())
-
-		// Сохраняем в локальную память, если есть имя
-		if v.Name() != "" {
-			frame := interpreter.getCurrentFrame()
-			if frame != nil {
-				fmt.Printf("  Сохраняем в локальную память как '%s'\n", v.Name())
-				frame.LocalMemory[v.Name()] = result
-			}
-		}
-		return result
+		return interpreter.resolveBinOp(v)
 	case *ssa.Parameter:
-		fmt.Printf("  Это Parameter\n")
 		return interpreter.resolveParameter(v)
 	case *ssa.Alloc:
-		fmt.Printf("  Это Alloc\n")
 		return interpreter.resolveAlloc(v)
 	case *ssa.Phi:
-		fmt.Printf("  Это Phi\n")
 		return interpreter.resolvePhi(v)
+	case *ssa.Call:
+		return interpreter.resolveCall(v)
+	case *ssa.ChangeType:
+		return interpreter.ResolveExpression(v.X)
+	case *ssa.Convert:
+		return interpreter.ResolveExpression(v.X)
+	case *ssa.MakeInterface:
+		return interpreter.ResolveExpression(v.X)
+	case *ssa.FieldAddr:
+		return interpreter.resolveFieldAddr(v)
+	case *ssa.Field:
+		return interpreter.resolveField(v)
+	case *ssa.IndexAddr:
+		return interpreter.resolveIndexAddr(v)
+	case *ssa.Index:
+		return interpreter.resolveIndex(v)
 	default:
-		fmt.Printf("  Неизвестный тип: %T\n", v)
-		// Для неизвестных значений создаем переменную
 		if v != nil && v.Name() != "" {
-			return symbolic.NewSymbolicVariable(v.Name(), symbolic.IntType)
+			var exprType symbolic.ExpressionType
+			typeStr := v.Type().String()
+			if strings.Contains(typeStr, "int") {
+				exprType = symbolic.IntType
+			} else if typeStr == "bool" {
+				exprType = symbolic.BoolType
+			} else {
+				exprType = symbolic.IntType
+			}
+			return symbolic.NewSymbolicVariable(v.Name(), exprType)
 		}
 		return symbolic.NewIntConstant(0)
 	}
 }
 
-func (interpreter *Interpreter) interpretReturn(instr *ssa.Return) []Interpreter {
-	frame := interpreter.getCurrentFrame()
+func (interpreter *Interpreter) interpretReturn(instr *ssa.Return) []*Interpreter {
+	frame := interpreter.GetCurrentFrame()
 
 	if len(instr.Results) > 0 {
-		result := interpreter.resolveExpression(instr.Results[0])
+		result := interpreter.ResolveExpression(instr.Results[0])
 		frame.ReturnValue = result
 	}
 
 	interpreter.currentBlock = nil
-	return []Interpreter{*interpreter}
+	return []*Interpreter{interpreter}
 }
 
-func (interpreter *Interpreter) interpretIf(instr *ssa.If) []Interpreter {
-	fmt.Printf("=== ОТЛАДКА interpretIf ===\n")
-	fmt.Printf("instr.Cond тип: %T, значение: %s, имя: %s\n",
-		instr.Cond, instr.Cond.String(), instr.Cond.Name())
+func (interpreter *Interpreter) interpretIf(instr *ssa.If) []*Interpreter {
+	condExpr := interpreter.ResolveExpression(instr.Cond)
 
-	// Сначала попробуем разрешить как BinOp
-	if binOp, ok := instr.Cond.(*ssa.BinOp); ok {
-		fmt.Printf("Условие If - это BinOp: %s > %s\n",
-			binOp.X.String(), binOp.Y.String())
-		fmt.Printf("Операция BinOp: %v (10 = GTR)\n", binOp.Op)
-	}
-
-	condExpr := interpreter.resolveExpression(instr.Cond)
-
-	fmt.Printf("condExpr после resolveExpression: тип=%v, значение=%s\n",
-		condExpr.Type(), condExpr.String())
-
-	// Убедимся, что condExpr - булев тип
-	if condExpr.Type() != symbolic.BoolType {
-		fmt.Printf("условие if не булево: тип %v, значение %s\n",
-			condExpr.Type(), condExpr.String())
-
-		// Попробуем найти значение в локальной памяти еще раз
-		frame := interpreter.getCurrentFrame()
-		if frame != nil && instr.Cond.Name() != "" {
-			fmt.Printf("Ищем '%s' в локальной памяти: ", instr.Cond.Name())
-			if val, ok := frame.LocalMemory[instr.Cond.Name()]; ok {
-				fmt.Printf("найдено: %s (тип: %v)\n", val.String(), val.Type())
-				condExpr = val
-			} else {
-				fmt.Printf("не найдено\n")
-			}
-		}
-
-		if condExpr.Type() != symbolic.BoolType {
-			panic(fmt.Sprintf("Условие if не булево: тип %v", condExpr.Type()))
-		}
-	}
-	trueInterpreter := interpreter.copy()
-	falseInterpreter := interpreter.copy()
+	trueInterpreter := interpreter.Copy()
+	falseInterpreter := interpreter.Copy()
 
 	notCond := symbolic.NewUnaryOperation(condExpr, symbolic.UNARY_NOT)
 
-	// Обновляем условия пути
-	// Для true ветки: PathCondition AND cond
 	trueInterpreter.PathCondition = symbolic.NewLogicalOperation(
 		[]symbolic.SymbolicExpression{interpreter.PathCondition, condExpr},
 		symbolic.AND,
 	)
 
-	// Для false ветки: PathCondition AND NOT(cond)
 	falseInterpreter.PathCondition = symbolic.NewLogicalOperation(
 		[]symbolic.SymbolicExpression{interpreter.PathCondition, notCond},
 		symbolic.AND,
 	)
+
+	trueInterpreter.prevBlock = interpreter.currentBlock
+	falseInterpreter.prevBlock = interpreter.currentBlock
 
 	if len(instr.Block().Succs) >= 2 {
 		trueInterpreter.currentBlock = instr.Block().Succs[0]
@@ -239,105 +250,519 @@ func (interpreter *Interpreter) interpretIf(instr *ssa.If) []Interpreter {
 		falseInterpreter.currentBlock = nil
 	}
 
-	return []Interpreter{trueInterpreter, falseInterpreter}
+	return []*Interpreter{trueInterpreter, falseInterpreter}
 }
 
-func (interpreter *Interpreter) interpretJump(instr *ssa.Jump) []Interpreter {
+func (interpreter *Interpreter) interpretJump(instr *ssa.Jump) []*Interpreter {
 	if len(instr.Block().Succs) > 0 {
-		interpreter.currentBlock = instr.Block().Succs[0]
+		nextBlock := instr.Block().Succs[0]
+
+		interpreter.prevBlock = interpreter.currentBlock
+
+		blockKey := fmt.Sprintf("%p", nextBlock)
+		visitCount := interpreter.blockVisitCount[blockKey]
+
+		if visitCount >= interpreter.maxLoopUnroll {
+			exitBlock := interpreter.findLoopExit(nextBlock)
+			if exitBlock != nil {
+				interpreter.currentBlock = exitBlock
+				interpreter.instrIndex = 0
+			} else {
+				interpreter.currentBlock = nil
+			}
+			return []*Interpreter{interpreter}
+		}
+
+		interpreter.blockVisitCount[blockKey] = visitCount + 1
+
+		if interpreter.totalUnrolls() >= maxTotalUnrolls {
+			exitBlock := interpreter.findLoopExit(nextBlock)
+			if exitBlock != nil {
+				interpreter.currentBlock = exitBlock
+				interpreter.instrIndex = 0
+			} else {
+				interpreter.currentBlock = nil
+			}
+			return []*Interpreter{interpreter}
+		}
+
+		interpreter.currentBlock = nextBlock
 		interpreter.instrIndex = 0
 	} else {
 		interpreter.currentBlock = nil
 	}
-	return []Interpreter{*interpreter}
+	return []*Interpreter{interpreter}
 }
 
-func (interpreter *Interpreter) interpretUnOp(instr *ssa.UnOp) []Interpreter {
-	operand := interpreter.resolveExpression(instr.X)
+func (interpreter *Interpreter) handleLoop(loopHeader *ssa.BasicBlock) []*Interpreter {
+	return interpreter.exitLoop(loopHeader)
+}
 
-	// Определяем оператор
-	var unaryOp symbolic.UnaryOperator
-	switch instr.Op {
-	case 1: // token.SUB (унарный минус)
-		unaryOp = symbolic.UNARY_MINUS
-	case 13: // token.NOT (логическое НЕ)
-		unaryOp = symbolic.UNARY_NOT
-	default:
-		interpreter.instrIndex++
-		return []Interpreter{*interpreter}
+func (interpreter *Interpreter) totalUnrolls() int {
+	total := 0
+	for _, count := range interpreter.blockVisitCount {
+		total += count
+	}
+	return total
+}
+
+func (interpreter *Interpreter) findLoopExit(loopHeader *ssa.BasicBlock) *ssa.BasicBlock {
+	//ищем блок, который не является частью цикла
+	//ищем блок с return или блок, который ведет к выходу
+
+	visited := make(map[*ssa.BasicBlock]bool)
+	var queue []*ssa.BasicBlock
+
+	//начинаем с преемников заголовка цикла
+	for _, succ := range loopHeader.Succs {
+		if succ != nil && succ != loopHeader {
+			queue = append(queue, succ)
+		}
 	}
 
-	// Создаем унарную операцию
+	for len(queue) > 0 {
+		block := queue[0]
+		queue = queue[1:]
+
+		if visited[block] {
+			continue
+		}
+		visited[block] = true
+
+		//проверяем, является ли этот блок выходом
+		//если блок содержит кeturn - это выход
+		for _, instr := range block.Instrs {
+			if _, ok := instr.(*ssa.Return); ok {
+				return block
+			}
+		}
+
+		//если блок не ведет обратно в заголовок цикла
+		isPartOfLoop := false
+		for _, succ := range block.Succs {
+			if succ == loopHeader {
+				isPartOfLoop = true
+				break
+			}
+		}
+
+		if !isPartOfLoop {
+			return block
+		}
+
+		//добавляем преемников для дальнейшего поиска
+		for _, succ := range block.Succs {
+			if succ != nil && !visited[succ] {
+				queue = append(queue, succ)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (interpreter *Interpreter) exitLoop(loopHeader *ssa.BasicBlock) []*Interpreter {
+	exitInterpreter := interpreter.Copy()
+	exitBlock := interpreter.findLoopExit(loopHeader)
+	if exitBlock != nil {
+		exitInterpreter.currentBlock = exitBlock
+		exitInterpreter.instrIndex = 0
+		exitInterpreter.prevBlock = interpreter.currentBlock
+	} else {
+		exitInterpreter.currentBlock = nil
+	}
+
+	return []*Interpreter{exitInterpreter}
+}
+
+func (interpreter *Interpreter) interpretUnOp(instr *ssa.UnOp) []*Interpreter {
+	operand := interpreter.ResolveExpression(instr.X)
+
+	var unaryOp symbolic.UnaryOperator
+
+	opStr := instr.Op.String()
+	switch opStr {
+	case "-":
+		unaryOp = symbolic.UNARY_MINUS
+	case "!":
+		unaryOp = symbolic.UNARY_NOT
+	case "^":
+		interpreter.instrIndex++
+		return []*Interpreter{interpreter}
+	default:
+		interpreter.instrIndex++
+		return []*Interpreter{interpreter}
+	}
+
 	result := symbolic.NewUnaryOperation(operand, unaryOp)
 
-	// Сохраняем результат в локальную память
-	frame := interpreter.getCurrentFrame()
+	frame := interpreter.GetCurrentFrame()
 	if frame != nil && instr.Name() != "" {
 		frame.LocalMemory[instr.Name()] = result
 	}
 
 	interpreter.instrIndex++
-	return []Interpreter{*interpreter}
+	return []*Interpreter{interpreter}
 }
 
-func (interpreter *Interpreter) interpretBinOp(instr *ssa.BinOp) []Interpreter {
-	// Получаем операнды
-	left := interpreter.resolveExpression(instr.X)
-	right := interpreter.resolveExpression(instr.Y)
+func (interpreter *Interpreter) interpretBinOp(instr *ssa.BinOp) []*Interpreter {
+	left := interpreter.ResolveExpression(instr.X)
+	right := interpreter.ResolveExpression(instr.Y)
 
 	var binOp symbolic.BinaryOperator
-	switch instr.Op {
-	case token.ADD: // 1
+
+	opStr := instr.Op.String()
+
+	opStr = strings.Trim(opStr, "\"'")
+
+	isComparison := false
+
+	// Преобразуем в enum
+	switch opStr {
+	case "+":
 		binOp = symbolic.ADD
-	case token.SUB: // 2
+	case "-":
 		binOp = symbolic.SUB
-	case token.MUL: // 3
+	case "*":
 		binOp = symbolic.MUL
-	case token.QUO: // 4 (деление)
+	case "/":
 		binOp = symbolic.DIV
-	case token.REM: // 5 (остаток)
+	case "%":
 		binOp = symbolic.MOD
-	case token.EQL: // 6 (равно)
+	case "==":
 		binOp = symbolic.EQ
-	case token.NEQ: // 7 (не равно)
+		isComparison = true
+	case "!=":
 		binOp = symbolic.NE
-	case token.LSS: // 8 (меньше)
+		isComparison = true
+	case "<":
 		binOp = symbolic.LT
-	case token.LEQ: // 9 (меньше или равно)
+		isComparison = true
+	case "<=":
 		binOp = symbolic.LE
-	case token.GTR: // 10 (больше)
+		isComparison = true
+	case ">":
 		binOp = symbolic.GT
-	case token.GEQ: // 11 (больше или равно)
+		isComparison = true
+	case ">=":
 		binOp = symbolic.GE
-	default:
-		fmt.Printf("Неизвестная бинарная операция: %v (числовое значение: %d)\n",
-			instr.Op.String(), instr.Op)
+		isComparison = true
+	case "&", "|", "^", "<<", ">>", "&^":
 		interpreter.instrIndex++
-		return []Interpreter{*interpreter}
+		return []*Interpreter{interpreter}
+	case "&&":
+		result := symbolic.NewLogicalOperation([]symbolic.SymbolicExpression{left, right}, symbolic.AND)
+
+		frame := interpreter.GetCurrentFrame()
+		if frame != nil && instr.Name() != "" {
+			frame.LocalMemory[instr.Name()] = result
+		}
+
+		interpreter.instrIndex++
+		return []*Interpreter{interpreter}
+	case "||":
+		result := symbolic.NewLogicalOperation([]symbolic.SymbolicExpression{left, right}, symbolic.OR)
+
+		frame := interpreter.GetCurrentFrame()
+		if frame != nil && instr.Name() != "" {
+			frame.LocalMemory[instr.Name()] = result
+		}
+
+		interpreter.instrIndex++
+		return []*Interpreter{interpreter}
+	default:
+		interpreter.instrIndex++
+		return []*Interpreter{interpreter}
 	}
 
-	result := symbolic.NewBinaryOperation(left, right, binOp)
+	var result symbolic.SymbolicExpression
 
-	//сохраняем результат в локальную память под именем инструкции
-	frame := interpreter.getCurrentFrame()
+	if isComparison {
+		result = symbolic.NewBinaryOperation(left, right, binOp)
+	} else {
+		result = symbolic.NewBinaryOperation(left, right, binOp)
+	}
+
+	result = simplifyExpression(result)
+
+	frame := interpreter.GetCurrentFrame()
 	if frame != nil && instr.Name() != "" {
 		frame.LocalMemory[instr.Name()] = result
 	}
 
 	interpreter.instrIndex++
-	return []Interpreter{*interpreter}
+	return []*Interpreter{interpreter}
 }
 
-func (interpreter *Interpreter) interpretAlloc(instr *ssa.Alloc) []Interpreter {
-	ref := symbolic.NewRef(1, symbolic.RefType)
+func (interpreter *Interpreter) interpretAlloc(instr *ssa.Alloc) []*Interpreter {
+	var exprType symbolic.ExpressionType
+	typeStr := instr.Type().String()
 
-	frame := interpreter.getCurrentFrame()
+	if strings.Contains(typeStr, "int") {
+		exprType = symbolic.IntType
+	} else if strings.Contains(typeStr, "struct") {
+		exprType = symbolic.StructType
+	} else if strings.Contains(typeStr, "[") && strings.Contains(typeStr, "]") {
+		exprType = symbolic.ArrayType
+	} else {
+		exprType = symbolic.RefType
+	}
+
+	ref := interpreter.Heap.Allocate(exprType)
+
+	frame := interpreter.GetCurrentFrame()
 	if frame != nil && instr.Name() != "" {
 		frame.LocalMemory[instr.Name()] = ref
 	}
 
 	interpreter.instrIndex++
-	return []Interpreter{*interpreter}
+	return []*Interpreter{interpreter}
+}
+
+func (interpreter *Interpreter) interpretConvert(instr *ssa.Convert) []*Interpreter {
+	operand := interpreter.ResolveExpression(instr.X)
+
+	frame := interpreter.GetCurrentFrame()
+	if frame != nil && instr.Name() != "" {
+		frame.LocalMemory[instr.Name()] = operand
+	}
+
+	interpreter.instrIndex++
+	return []*Interpreter{interpreter}
+}
+
+func (interpreter *Interpreter) interpretStore(instr *ssa.Store) []*Interpreter {
+	addr := interpreter.ResolveExpression(instr.Addr)
+	value := interpreter.ResolveExpression(instr.Val)
+
+	if fieldAddr, ok := addr.(*symbolic.FieldAddr); ok {
+		interpreter.Heap.AssignField(fieldAddr.Ref, fieldAddr.FieldIndex, value)
+	} else if indexAddr, ok := addr.(*symbolic.IndexAddr); ok {
+		interpreter.Heap.AssignToArray(indexAddr.Ref, indexAddr.Index, value)
+	} else if ref, ok := addr.(*symbolic.Ref); ok {
+		interpreter.Heap.AssignField(ref, 0, value)
+	}
+
+	interpreter.instrIndex++
+	return []*Interpreter{interpreter}
+}
+
+func (interpreter *Interpreter) interpretPhi(instr *ssa.Phi) []*Interpreter {
+	//для PHI-функций выбираем значение в зависимости от того, из какого блока пришли
+	frame := interpreter.GetCurrentFrame()
+	if frame == nil {
+		interpreter.instrIndex++
+		return []*Interpreter{interpreter}
+	}
+
+	var result symbolic.SymbolicExpression
+
+	if interpreter.prevBlock != nil {
+		for i, pred := range instr.Block().Preds {
+			if pred == interpreter.prevBlock && i < len(instr.Edges) {
+				result = interpreter.ResolveExpression(instr.Edges[i])
+				break
+			}
+		}
+	}
+
+	if result == nil && len(instr.Edges) > 0 {
+		result = interpreter.ResolveExpression(instr.Edges[0])
+	}
+
+	if result == nil {
+		result = symbolic.NewIntConstant(0)
+	}
+
+	result = simplifyExpression(result)
+
+	if frame != nil && instr.Name() != "" {
+		frame.LocalMemory[instr.Name()] = result
+	}
+
+	interpreter.instrIndex++
+	return []*Interpreter{interpreter}
+}
+
+func (interpreter *Interpreter) interpretCall(instr *ssa.Call) []*Interpreter {
+	frame := interpreter.GetCurrentFrame()
+
+	args := make([]symbolic.SymbolicExpression, len(instr.Call.Args))
+	for i, arg := range instr.Call.Args {
+		args[i] = interpreter.ResolveExpression(arg)
+	}
+
+	funcName := "call_result"
+	if instr.Call.Value != nil && instr.Call.Value.Name() != "" {
+		funcName = instr.Call.Value.Name()
+	}
+
+	result := symbolic.NewSymbolicVariable(funcName, symbolic.IntType)
+
+	if frame != nil && instr.Name() != "" {
+		frame.LocalMemory[instr.Name()] = result
+	}
+
+	interpreter.instrIndex++
+	return []*Interpreter{interpreter}
+}
+
+func (interpreter *Interpreter) interpretMakeInterface(instr *ssa.MakeInterface) []*Interpreter {
+	value := interpreter.ResolveExpression(instr.X)
+
+	frame := interpreter.GetCurrentFrame()
+	if frame != nil && instr.Name() != "" {
+		frame.LocalMemory[instr.Name()] = value
+	}
+
+	interpreter.instrIndex++
+	return []*Interpreter{interpreter}
+}
+
+func (interpreter *Interpreter) interpretFieldAddr(instr *ssa.FieldAddr) []*Interpreter {
+	base := interpreter.ResolveExpression(instr.X)
+
+	var result symbolic.SymbolicExpression
+
+	if ref, ok := base.(*symbolic.Ref); ok {
+		fieldIndex := instr.Field
+		result = symbolic.NewFieldAddr(ref, fieldIndex)
+	} else {
+		result = symbolic.NewSymbolicVariable(instr.Name(), symbolic.RefType)
+	}
+
+	frame := interpreter.GetCurrentFrame()
+	if frame != nil && instr.Name() != "" {
+		frame.LocalMemory[instr.Name()] = result
+	}
+
+	interpreter.instrIndex++
+	return []*Interpreter{interpreter}
+}
+
+func (interpreter *Interpreter) interpretField(instr *ssa.Field) []*Interpreter {
+	base := interpreter.ResolveExpression(instr.X)
+
+	var result symbolic.SymbolicExpression
+
+	if ref, ok := base.(*symbolic.Ref); ok {
+		fieldIndex := instr.Field
+		result = interpreter.Heap.GetFieldValue(ref, fieldIndex)
+	} else {
+		result = symbolic.NewIntConstant(0)
+	}
+
+	frame := interpreter.GetCurrentFrame()
+	if frame != nil && instr.Name() != "" {
+		frame.LocalMemory[instr.Name()] = result
+	}
+
+	interpreter.instrIndex++
+	return []*Interpreter{interpreter}
+}
+
+func (interpreter *Interpreter) interpretIndexAddr(instr *ssa.IndexAddr) []*Interpreter {
+	base := interpreter.ResolveExpression(instr.X)
+	index := interpreter.ResolveExpression(instr.Index)
+
+	var result symbolic.SymbolicExpression
+
+	if ref, ok := base.(*symbolic.Ref); ok {
+		if indexConst, ok := index.(*symbolic.IntConstant); ok {
+			result = symbolic.NewIndexAddr(ref, int(indexConst.Value))
+		} else {
+			result = symbolic.NewIndexAddr(ref, 0)
+		}
+	} else {
+		result = symbolic.NewSymbolicVariable(instr.Name(), symbolic.RefType)
+	}
+
+	frame := interpreter.GetCurrentFrame()
+	if frame != nil && instr.Name() != "" {
+		frame.LocalMemory[instr.Name()] = result
+	}
+
+	interpreter.instrIndex++
+	return []*Interpreter{interpreter}
+}
+
+func (interpreter *Interpreter) interpretIndex(instr *ssa.Index) []*Interpreter {
+	base := interpreter.ResolveExpression(instr.X)
+	index := interpreter.ResolveExpression(instr.Index)
+
+	var result symbolic.SymbolicExpression
+
+	if ref, ok := base.(*symbolic.Ref); ok {
+		if indexConst, ok := index.(*symbolic.IntConstant); ok {
+			result = interpreter.Heap.GetFromArray(ref, int(indexConst.Value))
+		} else {
+			result = symbolic.NewIntConstant(0)
+		}
+	} else {
+		result = symbolic.NewIntConstant(0)
+	}
+
+	frame := interpreter.GetCurrentFrame()
+	if frame != nil && instr.Name() != "" {
+		frame.LocalMemory[instr.Name()] = result
+	}
+
+	interpreter.instrIndex++
+	return []*Interpreter{interpreter}
+}
+
+func (interpreter *Interpreter) interpretLoad(instr *ssa.UnOp) []*Interpreter {
+	addr := interpreter.ResolveExpression(instr.X)
+
+	var result symbolic.SymbolicExpression
+
+	switch a := addr.(type) {
+	case *symbolic.Ref:
+		result = interpreter.Heap.GetFieldValue(a, 0)
+	case *symbolic.FieldAddr:
+		result = interpreter.Heap.GetFieldValue(a.Ref, a.FieldIndex)
+	case *symbolic.IndexAddr:
+		result = interpreter.Heap.GetFromArray(a.Ref, a.Index)
+	default:
+		result = symbolic.NewIntConstant(0)
+	}
+
+	result = simplifyExpression(result)
+
+	frame := interpreter.GetCurrentFrame()
+	if frame != nil && instr.Name() != "" {
+		frame.LocalMemory[instr.Name()] = result
+	}
+
+	interpreter.instrIndex++
+	return []*Interpreter{interpreter}
+}
+
+func (interpreter *Interpreter) resolveLoad(l *ssa.UnOp) symbolic.SymbolicExpression {
+	if l.Name() != "" {
+		frame := interpreter.GetCurrentFrame()
+		if frame != nil {
+			if expr, ok := frame.LocalMemory[l.Name()]; ok {
+				return expr
+			}
+		}
+	}
+
+	addr := interpreter.ResolveExpression(l.X)
+
+	var result symbolic.SymbolicExpression
+	switch a := addr.(type) {
+	case *symbolic.Ref:
+		result = interpreter.Heap.GetFieldValue(a, 0)
+	case *symbolic.FieldAddr:
+		result = interpreter.Heap.GetFieldValue(a.Ref, a.FieldIndex)
+	case *symbolic.IndexAddr:
+		result = interpreter.Heap.GetFromArray(a.Ref, a.Index)
+	default:
+		result = symbolic.NewIntConstant(0)
+	}
+
+	return simplifyExpression(result)
 }
 
 func (interpreter *Interpreter) resolveConst(c *ssa.Const) symbolic.SymbolicExpression {
@@ -358,15 +783,23 @@ func (interpreter *Interpreter) resolveConst(c *ssa.Const) symbolic.SymbolicExpr
 	case constant.Bool:
 		boolVal := constant.BoolVal(val)
 		return symbolic.NewBoolConstant(boolVal)
+	case constant.String:
+		return symbolic.NewIntConstant(0)
+	case constant.Float:
+		if floatStr := val.String(); floatStr != "" {
+			if f, err := strconv.ParseFloat(floatStr, 64); err == nil {
+				return symbolic.NewIntConstant(int64(f))
+			}
+		}
+		return symbolic.NewIntConstant(0)
 	}
 
 	return symbolic.NewIntConstant(0)
 }
 
 func (interpreter *Interpreter) resolveUnOp(u *ssa.UnOp) symbolic.SymbolicExpression {
-	// Сначала проверяем, есть ли значение в локальной памяти
 	if u.Name() != "" {
-		frame := interpreter.getCurrentFrame()
+		frame := interpreter.GetCurrentFrame()
 		if frame != nil {
 			if expr, ok := frame.LocalMemory[u.Name()]; ok {
 				return expr
@@ -374,88 +807,80 @@ func (interpreter *Interpreter) resolveUnOp(u *ssa.UnOp) symbolic.SymbolicExpres
 		}
 	}
 
-	// Если нет, вычисляем
-	operand := interpreter.resolveExpression(u.X)
+	operand := interpreter.ResolveExpression(u.X)
 
 	var unaryOp symbolic.UnaryOperator
-	switch u.Op {
-	case 1: // token.SUB
+	opStr := u.Op.String()
+
+	switch opStr {
+	case "-":
 		unaryOp = symbolic.UNARY_MINUS
-	case 13: // token.NOT
+	case "!":
 		unaryOp = symbolic.UNARY_NOT
 	default:
 		return operand
 	}
 
-	return symbolic.NewUnaryOperation(operand, unaryOp)
+	result := symbolic.NewUnaryOperation(operand, unaryOp)
+	return simplifyExpression(result)
 }
 
 func (interpreter *Interpreter) resolveBinOp(b *ssa.BinOp) symbolic.SymbolicExpression {
-	fmt.Printf("=== ОТЛАДКА resolveBinOp ===\n")
-	fmt.Printf("  Операция: %s, имя: %s, код операции: %d\n", b.String(), b.Name(), b.Op)
-
 	if b.Name() != "" {
-		frame := interpreter.getCurrentFrame()
+		frame := interpreter.GetCurrentFrame()
 		if frame != nil {
 			if expr, ok := frame.LocalMemory[b.Name()]; ok {
-				fmt.Printf("  Найдено в локальной памяти: %s\n", expr.String())
 				return expr
 			}
 		}
 	}
 
-	left := interpreter.resolveExpression(b.X)
-	right := interpreter.resolveExpression(b.Y)
-
-	fmt.Printf("  Левый операнд: %s, правый операнд: %s\n", left.String(), right.String())
+	left := interpreter.ResolveExpression(b.X)
+	right := interpreter.ResolveExpression(b.Y)
 
 	var binOp symbolic.BinaryOperator
-	switch b.Op {
-	case 1: // token.ADD
+	opStr := b.Op.String()
+	opStr = strings.Trim(opStr, "\"'")
+
+	switch opStr {
+	case "+":
 		binOp = symbolic.ADD
-	case 2: // token.SUB
+	case "-":
 		binOp = symbolic.SUB
-	case 3: // token.MUL
+	case "*":
 		binOp = symbolic.MUL
-	case 4: // token.QUO
+	case "/":
 		binOp = symbolic.DIV
-	case 5: // token.REM
+	case "%":
 		binOp = symbolic.MOD
-	case 6: // token.EQL
+	case "==":
 		binOp = symbolic.EQ
-	case 7: // token.NEQ
+	case "!=":
 		binOp = symbolic.NE
-	case 8: // token.LSS
+	case "<":
 		binOp = symbolic.LT
-	case 9: // token.LEQ
+	case "<=":
 		binOp = symbolic.LE
-	case 10: // token.GTR
+	case ">":
 		binOp = symbolic.GT
-	case 11: // token.GEQ
+	case ">=":
 		binOp = symbolic.GE
+	case "&&":
+		result := symbolic.NewLogicalOperation([]symbolic.SymbolicExpression{left, right}, symbolic.AND)
+		return simplifyExpression(result)
+	case "||":
+		result := symbolic.NewLogicalOperation([]symbolic.SymbolicExpression{left, right}, symbolic.OR)
+		return simplifyExpression(result)
 	default:
-		fmt.Printf("  НЕИЗВЕСТНЫЙ ОПЕРАТОР: %d, left\n", b.Op)
 		return left
 	}
 
-	fmt.Printf("  Создаем операцию: %s %s %s\n", left.String(), binOp.String(), right.String())
-
 	result := symbolic.NewBinaryOperation(left, right, binOp)
-	fmt.Printf("  Результат: %s (тип: %v)\n", result.String(), result.Type())
-
-	if b.Name() != "" {
-		frame := interpreter.getCurrentFrame()
-		if frame != nil {
-			fmt.Printf("  Сохраняем в локальную память как '%s'\n", b.Name())
-			frame.LocalMemory[b.Name()] = result
-		}
-	}
-
-	return result
+	return simplifyExpression(result)
 }
 
 func (interpreter *Interpreter) resolveParameter(p *ssa.Parameter) symbolic.SymbolicExpression {
-	frame := interpreter.getCurrentFrame()
+	frame := interpreter.GetCurrentFrame()
 	if frame != nil {
 		if val, ok := frame.LocalMemory[p.Name()]; ok {
 			return val
@@ -463,12 +888,12 @@ func (interpreter *Interpreter) resolveParameter(p *ssa.Parameter) symbolic.Symb
 	}
 
 	var exprType symbolic.ExpressionType
-	switch p.Type().String() {
-	case "int":
+	typeStr := p.Type().String()
+	if strings.Contains(typeStr, "int") {
 		exprType = symbolic.IntType
-	case "bool":
+	} else if typeStr == "bool" {
 		exprType = symbolic.BoolType
-	default:
+	} else {
 		exprType = symbolic.IntType
 	}
 
@@ -476,45 +901,290 @@ func (interpreter *Interpreter) resolveParameter(p *ssa.Parameter) symbolic.Symb
 }
 
 func (interpreter *Interpreter) resolveAlloc(a *ssa.Alloc) symbolic.SymbolicExpression {
-	frame := interpreter.getCurrentFrame()
+	frame := interpreter.GetCurrentFrame()
 	if frame != nil && a.Name() != "" {
 		if val, ok := frame.LocalMemory[a.Name()]; ok {
 			return val
 		}
 	}
 
-	return symbolic.NewRef(0, symbolic.RefType)
+	var exprType symbolic.ExpressionType
+	typeStr := a.Type().String()
+
+	if strings.Contains(typeStr, "int") {
+		exprType = symbolic.IntType
+	} else if strings.Contains(typeStr, "struct") {
+		exprType = symbolic.StructType
+	} else if strings.Contains(typeStr, "[") && strings.Contains(typeStr, "]") {
+		exprType = symbolic.ArrayType
+	} else {
+		exprType = symbolic.RefType
+	}
+
+	return interpreter.Heap.Allocate(exprType)
 }
 
 func (interpreter *Interpreter) resolvePhi(phi *ssa.Phi) symbolic.SymbolicExpression {
-	frame := interpreter.getCurrentFrame()
+	frame := interpreter.GetCurrentFrame()
 	if frame != nil && phi.Name() != "" {
 		if val, ok := frame.LocalMemory[phi.Name()]; ok {
 			return val
 		}
 	}
 
-	// Используем первое значение из ребер
+	for _, edge := range phi.Edges {
+		if edge != nil && edge.Name() != "" {
+			if expr, ok := frame.LocalMemory[edge.Name()]; ok {
+				return simplifyExpression(expr)
+			}
+		}
+	}
+
 	if len(phi.Edges) > 0 {
-		return interpreter.resolveExpression(phi.Edges[0])
+		result := interpreter.ResolveExpression(phi.Edges[0])
+		return simplifyExpression(result)
 	}
 
 	return symbolic.NewIntConstant(0)
 }
 
-// String возвращает строковое представление интерпретатора
-func (interpreter *Interpreter) String() string {
-	result := fmt.Sprintf("Interpreter:\n")
-	result += fmt.Sprintf("  PathCondition: %s\n", interpreter.PathCondition.String())
-	result += fmt.Sprintf("  CurrentBlock: %v\n", interpreter.currentBlock)
-	result += fmt.Sprintf("  InstrIndex: %d\n", interpreter.instrIndex)
-
-	if len(interpreter.CallStack) > 0 {
-		frame := interpreter.getCurrentFrame()
-		if frame != nil && frame.ReturnValue != nil {
-			result += fmt.Sprintf("  ReturnValue: %s\n", frame.ReturnValue.String())
+func (interpreter *Interpreter) resolveCall(c *ssa.Call) symbolic.SymbolicExpression {
+	frame := interpreter.GetCurrentFrame()
+	if frame != nil && c.Name() != "" {
+		if val, ok := frame.LocalMemory[c.Name()]; ok {
+			return val
 		}
 	}
+
+	funcName := "call_result"
+	if c.Call.Value != nil && c.Call.Value.Name() != "" {
+		funcName = c.Call.Value.Name()
+	}
+
+	return symbolic.NewSymbolicVariable(funcName, symbolic.IntType)
+}
+
+func (interpreter *Interpreter) resolveFieldAddr(f *ssa.FieldAddr) symbolic.SymbolicExpression {
+	if f.Name() != "" {
+		frame := interpreter.GetCurrentFrame()
+		if frame != nil {
+			if expr, ok := frame.LocalMemory[f.Name()]; ok {
+				return expr
+			}
+		}
+	}
+
+	base := interpreter.ResolveExpression(f.X)
+
+	if ref, ok := base.(*symbolic.Ref); ok {
+		return symbolic.NewFieldAddr(ref, f.Field)
+	}
+
+	return symbolic.NewSymbolicVariable(f.Name(), symbolic.RefType)
+}
+
+func (interpreter *Interpreter) resolveField(f *ssa.Field) symbolic.SymbolicExpression {
+	if f.Name() != "" {
+		frame := interpreter.GetCurrentFrame()
+		if frame != nil {
+			if expr, ok := frame.LocalMemory[f.Name()]; ok {
+				return expr
+			}
+		}
+	}
+
+	base := interpreter.ResolveExpression(f.X)
+
+	if ref, ok := base.(*symbolic.Ref); ok {
+		result := interpreter.Heap.GetFieldValue(ref, f.Field)
+		return simplifyExpression(result)
+	}
+
+	return symbolic.NewIntConstant(0)
+}
+
+func (interpreter *Interpreter) resolveIndexAddr(i *ssa.IndexAddr) symbolic.SymbolicExpression {
+	if i.Name() != "" {
+		frame := interpreter.GetCurrentFrame()
+		if frame != nil {
+			if expr, ok := frame.LocalMemory[i.Name()]; ok {
+				return expr
+			}
+		}
+	}
+
+	base := interpreter.ResolveExpression(i.X)
+	index := interpreter.ResolveExpression(i.Index)
+
+	if ref, ok := base.(*symbolic.Ref); ok {
+		if indexConst, ok := index.(*symbolic.IntConstant); ok {
+			return symbolic.NewIndexAddr(ref, int(indexConst.Value))
+		}
+		return symbolic.NewIndexAddr(ref, 0)
+	}
+
+	return symbolic.NewSymbolicVariable(i.Name(), symbolic.RefType)
+}
+
+func (interpreter *Interpreter) resolveIndex(i *ssa.Index) symbolic.SymbolicExpression {
+	if i.Name() != "" {
+		frame := interpreter.GetCurrentFrame()
+		if frame != nil {
+			if expr, ok := frame.LocalMemory[i.Name()]; ok {
+				return expr
+			}
+		}
+	}
+
+	base := interpreter.ResolveExpression(i.X)
+	index := interpreter.ResolveExpression(i.Index)
+
+	if ref, ok := base.(*symbolic.Ref); ok {
+		if indexConst, ok := index.(*symbolic.IntConstant); ok {
+			result := interpreter.Heap.GetFromArray(ref, int(indexConst.Value))
+			return simplifyExpression(result)
+		}
+		return symbolic.NewIntConstant(0)
+	}
+
+	return symbolic.NewIntConstant(0)
+}
+
+func simplifyExpression(expr symbolic.SymbolicExpression) symbolic.SymbolicExpression {
+	if expr == nil {
+		return expr
+	}
+
+	switch e := expr.(type) {
+	case *symbolic.BinaryOperation:
+		left := simplifyExpression(e.Left)
+		right := simplifyExpression(e.Right)
+
+		if leftConst, ok := left.(*symbolic.IntConstant); ok {
+			if rightConst, ok := right.(*symbolic.IntConstant); ok {
+				switch e.Operator {
+				case symbolic.ADD:
+					return symbolic.NewIntConstant(leftConst.Value + rightConst.Value)
+				case symbolic.SUB:
+					return symbolic.NewIntConstant(leftConst.Value - rightConst.Value)
+				case symbolic.MUL:
+					return symbolic.NewIntConstant(leftConst.Value * rightConst.Value)
+				case symbolic.DIV:
+					if rightConst.Value != 0 {
+						return symbolic.NewIntConstant(leftConst.Value / rightConst.Value)
+					}
+				case symbolic.MOD:
+					if rightConst.Value != 0 {
+						return symbolic.NewIntConstant(leftConst.Value % rightConst.Value)
+					}
+				}
+			}
+		}
+
+		if e.Operator == symbolic.ADD {
+			if leftConst, ok := left.(*symbolic.IntConstant); ok && leftConst.Value == 0 {
+				return right
+			}
+			if rightConst, ok := right.(*symbolic.IntConstant); ok && rightConst.Value == 0 {
+				return left
+			}
+		}
+
+		if e.Operator == symbolic.MUL {
+			if leftConst, ok := left.(*symbolic.IntConstant); ok && leftConst.Value == 0 {
+				return symbolic.NewIntConstant(0)
+			}
+			if rightConst, ok := right.(*symbolic.IntConstant); ok && rightConst.Value == 0 {
+				return symbolic.NewIntConstant(0)
+			}
+		}
+
+		if e.Operator == symbolic.SUB {
+			if rightConst, ok := right.(*symbolic.IntConstant); ok && rightConst.Value == 0 {
+				return left
+			}
+		}
+
+		if left != e.Left || right != e.Right {
+			return symbolic.NewBinaryOperation(left, right, e.Operator)
+		}
+		return expr
+
+	case *symbolic.UnaryOperation:
+		operand := simplifyExpression(e.Operand)
+
+		if operandConst, ok := operand.(*symbolic.IntConstant); ok {
+			switch e.Operator {
+			case symbolic.UNARY_MINUS:
+				return symbolic.NewIntConstant(-operandConst.Value)
+			case symbolic.UNARY_NOT:
+				if operandConst.Value == 0 {
+					return symbolic.NewBoolConstant(true)
+				} else {
+					return symbolic.NewBoolConstant(false)
+				}
+			}
+		}
+
+		if e.Operator == symbolic.UNARY_NOT {
+			if nestedUnary, ok := operand.(*symbolic.UnaryOperation); ok && nestedUnary.Operator == symbolic.UNARY_NOT {
+				return simplifyExpression(nestedUnary.Operand)
+			}
+		}
+
+		if operand != e.Operand {
+			return symbolic.NewUnaryOperation(operand, e.Operator)
+		}
+		return expr
+
+	case *symbolic.LogicalOperation:
+		simplifiedOperands := make([]symbolic.SymbolicExpression, len(e.Operands))
+		changed := false
+
+		for i, operand := range e.Operands {
+			simplified := simplifyExpression(operand)
+			simplifiedOperands[i] = simplified
+			if simplified != operand {
+				changed = true
+			}
+		}
+
+		if changed {
+			return symbolic.NewLogicalOperation(simplifiedOperands, e.Operator)
+		}
+		return expr
+
+	default:
+		return expr
+	}
+}
+
+func (interpreter *Interpreter) String() string {
+	result := fmt.Sprintf("Interpreter:\n")
+	result += fmt.Sprintf("PathCondition: %s\n", interpreter.PathCondition.String())
+
+	if len(interpreter.CallStack) > 0 {
+		frame := interpreter.GetCurrentFrame()
+		result += fmt.Sprintf("Current Frame:\n")
+		result += fmt.Sprintf("Function: %s\n", frame.Function.Name())
+
+		if len(frame.LocalMemory) > 0 {
+			result += fmt.Sprintf("LocalMemory:\n")
+			for k, v := range frame.LocalMemory {
+				result += fmt.Sprintf("%s: %s\n", k, v.String())
+			}
+		}
+
+		if frame.ReturnValue != nil {
+			result += fmt.Sprintf("ReturnValue: %s\n", frame.ReturnValue.String())
+		}
+	}
+
+	if interpreter.currentBlock != nil {
+		result += fmt.Sprintf("CurrentBlock: %s\n", interpreter.currentBlock.String())
+	}
+	result += fmt.Sprintf("InstrIndex: %d\n", interpreter.instrIndex)
+	result += fmt.Sprintf("TotalUnrolls: %d\n", interpreter.totalUnrolls())
 
 	return result
 }

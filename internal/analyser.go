@@ -16,16 +16,6 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-type Analyser struct {
-	Package      *ssa.Package
-	StatesQueue  PriorityQueue
-	PathSelector PathSelector
-	Results      []Interpreter
-	Z3Translator translator.Translator
-	maxSteps     int
-	stepsCounter int
-}
-
 type Builder struct {
 	fset *token.FileSet
 }
@@ -96,6 +86,16 @@ func (b *Builder) PrintFunctionInfo(fn *ssa.Function) {
 	}
 }
 
+type Analyser struct {
+	Package      *ssa.Package
+	StatesQueue  PriorityQueue
+	PathSelector PathSelector
+	Results      []Interpreter
+	Z3Translator translator.Translator
+	maxSteps     int
+	stepsCounter int
+}
+
 func Analyse(source string, functionName string) []Interpreter {
 	return AnalyseWithOptions(source, functionName, &DfsPathSelector{}, 10000, true)
 }
@@ -144,7 +144,7 @@ func AnalyseWithOptions(source string, functionName string, selector PathSelecto
 			fmt.Printf("Условие пути: %s\n", interpreter.PathCondition.String())
 		}
 
-		if interpreter.isFinished() {
+		if interpreter.IsFinished() {
 			if verbose {
 				fmt.Printf("Состояние завершено\n")
 			}
@@ -152,7 +152,7 @@ func AnalyseWithOptions(source string, functionName string, selector PathSelecto
 			continue
 		}
 
-		nextInstruction := interpreter.getNextInstruction()
+		nextInstruction := interpreter.GetNextInstruction()
 		if verbose && nextInstruction != nil {
 			fmt.Printf("Инструкция: %T: %s\n", nextInstruction, nextInstruction.String())
 
@@ -170,7 +170,7 @@ func AnalyseWithOptions(source string, functionName string, selector PathSelecto
 			fmt.Printf("Инструкция: %T: %s\n", nextInstruction, nextInstruction.String())
 		}
 
-		newStates := interpreter.interpretDynamically(nextInstruction)
+		newStates := interpreter.InterpretDynamically(nextInstruction)
 
 		if verbose {
 			fmt.Printf("Получено новых состояний: %d\n", len(newStates))
@@ -179,8 +179,8 @@ func AnalyseWithOptions(source string, functionName string, selector PathSelecto
 		for _, newState := range newStates {
 			newState.Analyser = analyser
 			heap.Push(&analyser.StatesQueue, &Item{
-				value:    newState,
-				priority: analyser.PathSelector.CalculatePriority(newState),
+				value:    *newState,
+				priority: analyser.PathSelector.CalculatePriority(*newState),
 			})
 		}
 	}
@@ -193,7 +193,7 @@ func AnalyseWithOptions(source string, functionName string, selector PathSelecto
 		for i, result := range analyser.Results {
 			fmt.Printf("\nСостояние %d:\n", i)
 			fmt.Printf("  Условие пути: %s\n", result.PathCondition.String())
-			if frame := result.getCurrentFrame(); frame != nil && frame.ReturnValue != nil {
+			if frame := result.GetCurrentFrame(); frame != nil && frame.ReturnValue != nil {
 				fmt.Printf("  Возвращаемое значение: %s\n", frame.ReturnValue.String())
 			}
 		}
@@ -222,12 +222,17 @@ func createInitialInterpreter(fn *ssa.Function, analyser *Analyser) Interpreter 
 
 	mem := memory.NewSymbolicMemory()
 
-	return Interpreter{
+	interpreter := Interpreter{
 		CallStack:     []CallStackFrame{initialFrame},
 		Analyser:      analyser,
 		PathCondition: symbolic.NewBoolConstant(true),
 		Heap:          mem,
 		currentBlock:  fn.Blocks[0],
 		instrIndex:    0,
+		loopCounters:  make(map[string]int),
+		maxLoopUnroll: 10,
+		visitedBlocks: make(map[string]bool),
 	}
+
+	return interpreter
 }
